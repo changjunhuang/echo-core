@@ -30,13 +30,13 @@ func (s *DepartmentService) GetDepartment(id uint) (*dto.DepartmentResponse, err
 
 // GetDepartmentList 获取部门列表
 func (s *DepartmentService) GetDepartmentList(req dto.DepartmentRequest) (*dto.DepartmentListResponse, error) {
-	products, total, err := s.repo.GetList(req)
+	departments, total, err := s.repo.GetList(req)
 	if err != nil {
 		return nil, err
 	}
 
 	var list []dto.DepartmentResponse
-	for _, p := range products {
+	for _, p := range departments {
 		list = append(list, *s.toResponse(&p))
 	}
 

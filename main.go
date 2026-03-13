@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"go-start/config"
-	"go-start/models"
 	"go-start/routes"
 )
 
@@ -26,8 +25,8 @@ func main() {
 	}
 
 	// 自动迁移
-	config.DB.AutoMigrate(&models.Department{})
-	
+	//config.DB.AutoMigrate(&models.Department{})
+
 	// 设置路由
 	r := gin.Default()
 	routes.SetupRoutes(r)

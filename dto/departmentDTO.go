@@ -4,23 +4,23 @@ import "time"
 
 // 列表查询请求
 type DepartmentRequest struct {
-	Id               uint      `json:"id"`
-	Name             string    `json:"name"`
-	CreatedTimeStart time.Time `json:"created_time_start"`
-	CreatedTimeEnd   time.Time `json:"created_time_end"`
-	UpdatedTimeStart time.Time `json:"updated_time_start"`
-	UpdatedTimeEnd   time.Time `json:"updated_time_end"`
+	Id               uint      `form:"id" json:"id"`
+	Name             string    `form:"name" json:"name"`
+	CreatedTimeStart time.Time `form:"createdTimeStart" json:"createdTimeStart"`
+	CreatedTimeEnd   time.Time `form:"createdTimeEnd" json:"createdTimeEnd"`
+	UpdatedTimeStart time.Time `form:"updatedTimeStart" json:"updatedTimeStart"`
+	UpdatedTimeEnd   time.Time `form:"updatedTimeEnd" json:"updatedTimeEnd"`
 
-	Page     int `form:"page" binding:"min=1"`        // 页码，默认1
-	PageSize int `form:"page_size" binding:"max=100"` // 每页数量，默认10
+	Page     int `form:"page" binding:"min=1"`       // 页码，默认1
+	PageSize int `form:"pageSize" binding:"max=100"` // 每页数量，默认10
 }
 
 // 单条响应
 type DepartmentResponse struct {
 	ID          uint      `json:"id"`
 	Name        string    `json:"name"`
-	CreatedTime time.Time `json:"created_time"`
-	UpdatedTime time.Time `json:"updated_time"`
+	CreatedTime time.Time `json:"createdTime"`
+	UpdatedTime time.Time `json:"updatedTime"`
 }
 
 // 列表响应
@@ -33,8 +33,8 @@ type DepartmentListResponse struct {
 // 创建请求
 type DepartmentCreateRequest struct {
 	Name        string    `json:"name" binding:"required,min=2,max=100"`
-	CreatedTime time.Time `json:"created_time"`
-	UpdatedTime time.Time `json:"updated_time"`
+	CreatedTime time.Time `form:"createdTime" json:"createdTime"`
+	UpdatedTime time.Time `form:"updatedTime" json:"updatedTime"`
 }
 
 // 更新请求

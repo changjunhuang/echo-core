@@ -76,7 +76,7 @@ func (h *DepartmentHandler) CreateDepartment(c *gin.Context) {
 		return
 	}
 
-	product, err := h.service.CreateDepartment(req)
+	department, err := h.service.CreateDepartment(req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -84,7 +84,7 @@ func (h *DepartmentHandler) CreateDepartment(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"code": 201,
-		"data": product,
+		"data": department,
 	})
 }
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"gorm.io/gorm/schema"
 	"log"
 	"os"
 	"time"
@@ -53,6 +54,9 @@ func InitDB() {
 				Colorful:      true,        // 彩色打印
 			},
 		),
+		NamingStrategy: schema.NamingStrategy{
+			SingularTable: true, // 禁用复数表名
+		},
 	}
 
 	var err error

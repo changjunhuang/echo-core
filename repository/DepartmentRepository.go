@@ -26,23 +26,23 @@ func (r *DepartmentRepository) GetByID(id uint) (*models.Department, error) {
 
 // GetList 获取列表（支持分页、筛选、排序）
 func (r *DepartmentRepository) GetList(req dto.DepartmentRequest) ([]models.Department, int64, error) {
-	var products []models.Department
+	var departments []models.Department
 	var total int64
 
 	query := r.db.Model(&models.Department{})
 
 	// 动态构建查询条件
-	if req.Id >= 0 {
+	if req.Id > 0 {
 		query = query.Where("id = ?", req.Id)
 	}
 	if req.Name != "" {
 		query = query.Where("name LIKE ?", "%"+req.Name+"%")
 	}
 	if !req.CreatedTimeStart.IsZero() {
-		query = query.Where("created_at >= ?", req.CreatedTimeStart)
+		query = query.Where("created_time >= ?", req.CreatedTimeStart)
 	}
 	if !req.CreatedTimeEnd.IsZero() {
-		query = query.Where("created_at <= ?", req.CreatedTimeEnd)
+		query = query.Where("created_time <= ?", req.CreatedTimeEnd)
 	}
 
 	// 获取总数（必须在分页前）
@@ -64,23 +64,23 @@ func (r *DepartmentRepository) GetList(req dto.DepartmentRequest) ([]models.Depa
 	}
 	offset := (page - 1) * pageSize
 
-	if err := query.Limit(pageSize).Offset(offset).Find(&products).Error; err != nil {
+	if err := query.Limit(pageSize).Offset(offset).Find(&departments).Error; err != nil {
 		return nil, 0, err
 	}
 
-	return products, total, nil
+	return departments, total, nil
 }
 
 // GetByCategory 按名称获取
 func (r *DepartmentRepository) GetByName(name string) ([]models.Department, error) {
-	var products []models.Department
-	err := r.db.Where("name = ?", name).Find(&products).Error
-	return products, err
+	var departments []models.Department
+	err := r.db.Where("name = ?", name).Find(&departments).Error
+	return departments, err
 }
 
 // Create 创建
-func (r *DepartmentRepository) Create(product *models.Department) error {
-	return r.db.Create(product).Error
+func (r *DepartmentRepository) Create(department *models.Department) error {
+	return r.db.Create(department).Error
 }
 
 // Update 更新
