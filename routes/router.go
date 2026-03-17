@@ -6,10 +6,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SetupRoutes 设置所有路由
 func SetupRoutes(r *gin.Engine) {
-	departmentHandler := handlers.NewDepartmentHandler()
-
 	api := r.Group("/api")
+	departmentRegisterRoutes(api)
+}
+
+// 注册部门相关的路由
+func departmentRegisterRoutes(api *gin.RouterGroup) {
+	departmentHandler := handlers.NewDepartmentHandler()
 	{
 		Departments := api.Group("/department")
 		{

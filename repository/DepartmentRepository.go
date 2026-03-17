@@ -39,17 +39,17 @@ func (r *DepartmentRepository) GetList(req dto.DepartmentRequest) ([]models.Depa
 		query = query.Where("name LIKE ?", "%"+req.Name+"%")
 	}
 	if !req.CreatedTimeStart.IsZero() {
-		query = query.Where("created_time >= ?", req.CreatedTimeStart)
+		query = query.Where("create_time >= ?", req.CreatedTimeStart)
 	}
 	if !req.CreatedTimeEnd.IsZero() {
-		query = query.Where("created_time <= ?", req.CreatedTimeEnd)
+		query = query.Where("create_time <= ?", req.CreatedTimeEnd)
 	}
 
 	// 获取总数（必须在分页前）
 	query.Count(&total)
 
 	// 排序
-	sortBy := "created_time"
+	sortBy := "create_time"
 	order := "desc"
 	query = query.Order(sortBy + " " + order)
 
