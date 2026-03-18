@@ -65,19 +65,22 @@ func (h *FileHandler) UploadHandler(c *gin.Context) {
 func (h *FileHandler) DownloadRedirectHandler(c *gin.Context) {
 	// Query 参数中获取文件 key
 	key := c.Query("key")
-	//key := "313003c1-ffe6-430d-9932-16ce8c4a6df0"
 	if key == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少文件key参数"})
 		return
 	}
 
-	// 生成七牛云私有空间临时下载 URL
-	downloadURL, err := h.service.GetPrivateURL(key, 3600) // 有效期 1 小时
+	// 生成七牛云公有空间临时下载 URL
+	downloadURL, err := h.service.GetPublicURL(key)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成下载链接失败"})
 		return
 	}
 
 	// 重定向到七牛云临时 URL
-	c.Redirect(http.StatusFound, downloadURL)
+	//c.Redirect(http.StatusFound, downloadURL)
+
+	c.JSON(http.StatusOK, gin.H{
+		"downloadURL": downloadURL,
+	})
 }

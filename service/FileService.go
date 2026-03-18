@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	accessKey = "L1PcZ8nUNX8XdeGSH0VcdlB5GsjsLfpf3qZ5"
+	accessKey = "L1PcZ8nUNX8XdeGSH0VcdlB5GsjsLfpf3qZ5-4iU"
 	secretKey = "U_5FvdBhV-LCKdvBy0T8tSkfErZamQNiHSZA_eHv"
 	bucket    = "huangchangjun"
 	domain    = "tc155y2lr.hn-bkt.clouddn.com"
@@ -84,8 +84,22 @@ func (h *FileService) GetPrivateURL(key string, expiresInSeconds int64) (string,
 	// 注意：如果使用了 CDN 域名且 CDN 开启了防盗链，可能需要额外处理
 	// 这里使用最简单的私有空间签名方法
 	//urlToSign := fmt.Sprintf("%s,%s", domain, key)
+
 	deadline := time.Now().Add(time.Duration(expiresInSeconds) * time.Second).Unix()
 	privateURL := storage.MakePrivateURL(mac, domain, key, deadline)
-	log.Println("七牛云文件下载成功：", privateURL)
+	log.Println("七牛云文件url获取成功：", privateURL)
 	return privateURL, nil
+}
+
+// getPublicURL 生成七牛云公开空间访问链接
+func (h *FileService) GetPublicURL(key string) (string, error) {
+	// 检查配置
+	if err := checkConfig(); err != nil {
+		log.Println(err)
+		return "", err
+	}
+
+	publicURL := storage.MakePublicURL(domain, key)
+	log.Println("七牛云文件url获取成功：", publicURL)
+	return publicURL + ".png", nil
 }
