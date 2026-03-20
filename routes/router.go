@@ -1,16 +1,20 @@
 package routes
 
 import (
+	"fmt"
 	"go-start/handlers"
 
 	"github.com/gin-gonic/gin"
 )
 
 // SetupRoutes 设置所有路由
-func SetupRoutes(r *gin.Engine) {
+func SetupRoutes(r *gin.Engine) error {
 	api := r.Group("/api")
 	departmentRegisterRoutes(api)
-	fileRegisterRoutes(api)
+	if err := fileRegisterRoutes(api); err != nil {
+		return err
+	}
+	return nil
 }
 
 // 注册部门相关的路由
@@ -29,8 +33,11 @@ func departmentRegisterRoutes(api *gin.RouterGroup) {
 }
 
 // 文件相关的路由
-func fileRegisterRoutes(api *gin.RouterGroup) {
-	fileHandler := handlers.NewFileHandler()
+func fileRegisterRoutes(api *gin.RouterGroup) error {
+	fileHandler, err := handlers.NewFileHandler()
+	if err != nil {
+		return fmt.Errorf("create file handler: %w", err)
+	}
 	{
 		file := api.Group("/file")
 		{
@@ -38,4 +45,5 @@ func fileRegisterRoutes(api *gin.RouterGroup) {
 			file.GET("/download", fileHandler.DownloadRedirectHandler) // 文件下载
 		}
 	}
+	return nil
 }

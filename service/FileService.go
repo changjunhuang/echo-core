@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/qiniu/go-sdk/v7/auth"
 	"github.com/qiniu/go-sdk/v7/storage"
 	"io"
@@ -21,11 +22,20 @@ var (
 )
 
 type FileService struct {
-	vectorService *VectorService
+	vectorService   *VectorService
+	weaviateService *WeaviateService
 }
 
-func NewFileService() *FileService {
-	return &FileService{vectorService: NewVectorService()}
+func NewFileService() (*FileService, error) {
+	weaviateService, err := NewWeaviateService("DocumentVector")
+	if err != nil {
+		return nil, fmt.Errorf("create weaviate service: %w", err)
+	}
+
+	return &FileService{
+		vectorService:   NewVectorService(),
+		weaviateService: weaviateService,
+	}, nil
 }
 
 // checkConfig 检查七牛云配置是否完整
@@ -73,6 +83,10 @@ func (h *FileService) UploadToQiniu(file io.Reader, key string) (string, error) 
 }
 
 func (h *FileService) Upload(file io.Reader, key string) (string, error) {
+	if h == nil || h.weaviateService == nil || h.vectorService == nil {
+		return "", errors.New("file service not initialized")
+	}
+
 	// 1. 上传文件到七牛云
 	url, err := h.UploadToQiniu(file, key)
 	if err != nil {
@@ -94,7 +108,31 @@ func (h *FileService) Upload(file io.Reader, key string) (string, error) {
 		return "", err
 	}
 	log.Println("获取向量数据成功", vector)
-	// todo 将向量数据存储到数据库中，关联文件URL等信息
+	// 4. 构建文档元数据（根据实际需求调整）
+	metadata := map[string]interface{}{
+		"pageCount": 10,
+		"author":    "huangchangjun",
+	}
+
+	// 4. 将向量数据存储到数据库中，关联文件URL等信息
+	// ctx 需要设置超时，避免长时间阻塞
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// 确保 schema 存在（通常在启动时调用一次）
+	if err := h.weaviateService.EnsureSchema(ctx); err != nil {
+		// 不要直接退出进程，返回给调用者处理
+		log.Println("ensure schema failed:", err)
+		return url, err
+	}
+	// 调用服务层存储文档向量
+	fileId := uuid.New().String()
+	log.Println("开始存储文档向量，fileId: ,filename: ", fileId, url)
+	err = h.weaviateService.StoreDocumentVector(ctx, fileId, url, vector, metadata)
+	if err != nil {
+		log.Printf("store failed: %v", err)
+		return url, err
+	}
+	log.Println("document stored successfully")
 	return url, nil
 }
 
@@ -139,7 +177,9 @@ func convertFileForBase64(url string) ([]byte, error) {
 		log.Printf("Error: %v\nStack Trace:\n%s", err, stack)
 		return nil, err
 	}
-	defer resp.Body.Close() // 确保响应体被关闭
+	defer func() {
+		_ = resp.Body.Close()
+	}() // 忽略 Close 返回值以消除 lint 警告
 
 	// 检查 HTTP 状态码
 	if resp.StatusCode != http.StatusOK {

@@ -2,11 +2,11 @@ package main
 
 import (
 	"log"
+	"net/http"
 	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
-	"net/http"
 
 	"go-start/config"
 	"go-start/routes"
@@ -17,6 +17,10 @@ func main() {
 	initConfig()
 	// 初始化数据库
 	config.InitDB()
+	// 初始化 Weaviate
+	if err := config.InitWeaviate(); err != nil {
+		log.Fatalf("init weaviate failed: %v", err)
+	}
 
 	// 现在可以用 os.Getenv() 读取了
 	port := os.Getenv("APP_PORT")
@@ -24,12 +28,11 @@ func main() {
 		port = "8080"
 	}
 
-	// 自动迁移
-	//config.DB.AutoMigrate(&models.Department{})
-
 	// 设置路由
 	r := gin.Default()
-	routes.SetupRoutes(r)
+	if err := routes.SetupRoutes(r); err != nil {
+		log.Fatalf("setup routes failed: %v", err)
+	}
 
 	r.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -38,8 +41,10 @@ func main() {
 	})
 
 	// 启动
-	log.Println("服务启动在 :8080")
-	r.Run(":" + port)
+	log.Println("服务启动在 :" + port)
+	if err := r.Run(":" + port); err != nil {
+		log.Fatalf("server run failed: %v", err)
+	}
 }
 
 func initConfig() {

@@ -12,12 +12,21 @@ type FileHandler struct {
 	service *service.FileService
 }
 
-func NewFileHandler() *FileHandler {
-	return &FileHandler{service: service.NewFileService()}
+func NewFileHandler() (*FileHandler, error) {
+	fileService, err := service.NewFileService()
+	if err != nil {
+		return nil, err
+	}
+	return &FileHandler{service: fileService}, nil
 }
 
 // uploadHandler 处理文件上传
 func (h *FileHandler) UploadHandler(c *gin.Context) {
+	if h == nil || h.service == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "file service not initialized"})
+		return
+	}
+
 	// 1. 限制请求体大小（例如 50MB）
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 50<<20)
 
@@ -27,7 +36,9 @@ func (h *FileHandler) UploadHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无法获取文件，请使用字段名 'file'"})
 		return
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	// 3. 可选：验证文件类型（例如只允许图片和视频）
 	// 可以通过检测 Content-Type 或扩展名来实现
@@ -63,6 +74,11 @@ func (h *FileHandler) UploadHandler(c *gin.Context) {
 
 // downloadRedirectHandler 处理文件下载重定向
 func (h *FileHandler) DownloadRedirectHandler(c *gin.Context) {
+	if h == nil || h.service == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "file service not initialized"})
+		return
+	}
+
 	// Query 参数中获取文件 key
 	key := c.Query("key")
 	if key == "" {
