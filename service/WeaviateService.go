@@ -83,3 +83,19 @@ func (s *WeaviateService) BatchStoreDocumentVectors(ctx context.Context, docs []
 	}
 	return s.weaviateRepo.BatchInsertDocuments(ctx, s.className, repoDocs)
 }
+
+// SearchByVector conducts a search by vector.
+func (s *WeaviateService) SearchByVector(ctx context.Context, vector []float32, limit int) ([]vectorModel.DocumentVector, error) {
+	if err := s.ensureRepo(); err != nil {
+		return nil, err
+	}
+	return s.weaviateRepo.SearchByVector(ctx, s.className, vector, limit)
+}
+
+// NearText searches for objects by text.
+func (s *WeaviateService) NearText(ctx context.Context, concepts []string, limit int) ([]vectorModel.DocumentVector, error) {
+	if err := s.ensureRepo(); err != nil {
+		return nil, err
+	}
+	return s.weaviateRepo.NearText(ctx, s.className, concepts, limit)
+}

@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/qiniu/go-sdk/v7 v7.26.4
+	github.com/sashabaranov/go-openai v1.41.2
 	github.com/weaviate/weaviate v1.29.0
 	github.com/weaviate/weaviate-go-client/v5 v5.0.2
 	gorm.io/driver/mysql v1.6.0
