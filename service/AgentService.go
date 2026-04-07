@@ -33,8 +33,7 @@ func NewAgentService(weaviateService *WeaviateService, vectorService *VectorServ
 
 // Chat 处理用户的请求流，利用循环实现自动任务规划和多轮追问
 func (s *AgentService) Chat(ctx context.Context, sessionID string, query string, options config.LLMRequestOptions) (string, error) {
-	log.Printf("开始调用Chat方法，params={ctx: %v, sessionID: %s, query: %s, options: %v}", ctx, sessionID, query, options)
-	defer func() { log.Printf("调用Chat方法结束，result={}") }()
+	log.Printf("开始调用Chat方法，params={sessionID: %s, query: %s, options: %v}", sessionID, query, options)
 	config, err := config.ResolveLLMConfig(options)
 	if err != nil {
 		return "", err
@@ -116,8 +115,12 @@ func (s *AgentService) Chat(ctx context.Context, sessionID string, query string,
 			continue
 		}
 		// 如果没有 toolCalls，说明模型认为任务完成或提出了澄清性问题，将这一轮最终内容返回给用户
-		return msg.Content, nil
+		result := msg.Content
+		log.Printf("多轮对话已经获取结果! result: \n%s", result)
+		return result, nil
 	}
+
+	log.Printf("由于执行步骤过多，已自动中断对话以保护系统资源。您可以尝试提出一个更确切的问题。")
 	return "由于执行步骤过多，已自动中断对话以保护系统资源。您可以尝试提出一个更确切的问题。", nil
 }
 
@@ -130,8 +133,7 @@ func (s *AgentService) ClearSession(sessionID string) {
 
 // 兼容原先 Query 方法以避免外部调用直接报错，实质转发给 Chat，SessionID 写死或基于配置均可
 func (s *AgentService) Query(ctx context.Context, query string, options config.LLMRequestOptions) (string, error) {
-	log.Printf("开始调用Query方法，params={ctx: %v, query: %s, options: %v}", ctx, query, options)
-	defer func() { log.Printf("调用Query方法结束，result={}") }()
+	log.Printf("开始调用Query方法，params={query: %s, options: %v}", query, options)
 	// 调用新形态的 Chat 逻辑，这里给出一个默认的 default_session 用于兼容
 	return s.Chat(ctx, "default_session", query, options)
 }

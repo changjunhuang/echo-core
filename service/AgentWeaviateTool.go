@@ -26,20 +26,14 @@ func NewWeaviateSearchTool(ws *WeaviateService, vs *VectorService) *WeaviateSear
 }
 
 func (t *WeaviateSearchTool) Name() string {
-	log.Printf("开始调用Name方法，params={}")
-	defer func() { log.Printf("调用Name方法结束，result={}") }()
 	return "search_images_by_text"
 }
 
 func (t *WeaviateSearchTool) Description() string {
-	log.Printf("开始调用Description方法，params={}")
-	defer func() { log.Printf("调用Description方法结束，result={}") }()
 	return "根据用户描述的文本或者要求，在向量数据库中搜索最相近的图片。如果用户想要找任何特定的图片，必须使用此工具。"
 }
 
 func (t *WeaviateSearchTool) Definition() openai.FunctionDefinition {
-	log.Printf("开始调用Definition方法，params={}")
-	defer func() { log.Printf("调用Definition方法结束，result={}") }()
 	// 动态返回参数描述。利用 map 构建 OpenAI Function 参数
 	return openai.FunctionDefinition{
 		Name:        t.Name(),
@@ -63,26 +57,29 @@ type SearchArgs struct {
 }
 
 func (t *WeaviateSearchTool) Execute(ctx context.Context, args string) (string, error) {
-	log.Printf("开始调用Execute方法，params={ctx: %v, args: %s}", ctx, args)
-	defer func() { log.Printf("调用Execute方法结束，result={}") }()
+	log.Printf("开始调用Execute方法，params={args: %s}", args)
 	var input SearchArgs
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
+		log.Printf("解析参数失败: %w", err)
 		return "", fmt.Errorf("解析参数失败: %w", err)
 	}
 
 	// 1. 利用 vectorService 将查询文本转换为向量
 	queryVector, err := t.vectorService.GetVectorFromText(input.Query)
 	if err != nil {
+		log.Printf("error converting query to vector: %w", err)
 		return "", fmt.Errorf("error converting query to vector: %w", err)
 	}
 
 	// 2. 利用 weaviateService 在向量库中查找最匹配的图片实体
 	results, err := t.weaviateService.SearchByVector(ctx, queryVector, 5)
 	if err != nil {
+		log.Printf("error searching Weaviate: %w", err)
 		return "", fmt.Errorf("error searching Weaviate: %w", err)
 	}
 
 	if len(results) == 0 {
+		log.Printf("没有在向量库中找到与该问题相关的图片信息。")
 		return "没有在向量库中找到与该问题相关的图片信息。", nil
 	}
 
@@ -95,5 +92,6 @@ func (t *WeaviateSearchTool) Execute(ctx context.Context, args string) (string, 
 		}
 		builder.WriteString("\n")
 	}
+	log.Printf("图片检索结果：%s", builder.String())
 	return strings.TrimSpace(builder.String()), nil
 }
