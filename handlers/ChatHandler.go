@@ -37,13 +37,21 @@ func (h *ChatHandler) HandleChat(c *gin.Context) {
 		return
 	}
 
-	// 调用 AgentService 处理聊天请求
-	reply, err := h.agentService.Query(c.Request.Context(), req.Message, config.LLMRequestOptions{
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = "default_session" // 或者生成新的UUID
+	}
+
+	// 将 History 传递到 AgentService (暂用 options 包装或者扩展接口)
+	options := config.LLMRequestOptions{
 		Provider: req.Provider,
 		Model:    req.Model,
 		BaseURL:  req.BaseURL,
 		APIKey:   req.APIKey,
-	})
+	}
+
+	// AgentService 需要改造以支持接收历史对话记录，并在生成回复时考虑这些历史记录
+	reply, err := h.agentService.ChatWithHistory(c.Request.Context(), sessionID, req.Message, req.History, options)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, dto.ChatResponse{Reply: err.Error()})
 		return

@@ -17,8 +17,6 @@ type WeaviateSearchTool struct {
 }
 
 func NewWeaviateSearchTool(ws *WeaviateService, vs *VectorService) *WeaviateSearchTool {
-	log.Printf("开始调用NewWeaviateSearchTool方法，params={ws: %v, vs: %v}", ws, vs)
-	defer func() { log.Printf("调用NewWeaviateSearchTool方法结束，result={}") }()
 	return &WeaviateSearchTool{
 		weaviateService: ws,
 		vectorService:   vs,

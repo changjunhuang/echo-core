@@ -3,21 +3,22 @@
 import (
 	"context"
 	"fmt"
-	"github.com/sashabaranov/go-openai"
 	"go-start/config"
+	"go-start/dto"
 	"log"
+
+	"github.com/sashabaranov/go-openai"
 )
 
 // AgentService 负责结合大模型完成自然语言的理解、意图识别与工具调用
 type AgentService struct {
 	sessionManager *SessionManager
 	registry       *Registry
+	vectorService  *VectorService // 添加对 vectorService 的引用
 }
 
 // NewAgentService 创建一个新的 AgentService，并利用依赖注入传递组件
 func NewAgentService(weaviateService *WeaviateService, vectorService *VectorService) (*AgentService, error) {
-	log.Printf("开始调用NewAgentService方法，params={weaviateService: %v, vectorService: %v}", weaviateService, vectorService)
-	defer func() { log.Printf("调用NewAgentService方法结束，result={}") }()
 	if _, err := config.LoadLLMConfig(); err != nil {
 		return nil, err
 	}
@@ -28,6 +29,7 @@ func NewAgentService(weaviateService *WeaviateService, vectorService *VectorServ
 	return &AgentService{
 		sessionManager: sm,
 		registry:       reg,
+		vectorService:  vectorService,
 	}, nil
 }
 
@@ -129,6 +131,69 @@ func (s *AgentService) ClearSession(sessionID string) {
 	log.Printf("开始调用ClearSession方法，params={sessionID: %s}", sessionID)
 	defer func() { log.Printf("调用ClearSession方法结束，result={}") }()
 	s.sessionManager.ClearSession(sessionID)
+}
+
+// ChatWithHistory 接收完整的用户历史列表、当次最新对话。
+// 内部包含了对历史对话的管理：过长则请求摘要，向量化历史存入库，拉取最相关历史。
+func (s *AgentService) ChatWithHistory(ctx context.Context, sessionID string, query string, history []dto.ChatMessage, options config.LLMRequestOptions) (string, error) {
+	log.Printf("开始调用ChatWithHistory, sessionID=%s, 历史对话长度=%d, 当前提问=%s", sessionID, len(history), query)
+
+	systemMsgContent := "你是一个高级智能企业助手。你有能力调用多种外部工具来帮助用户找图或查询数据。"
+
+	// 从Weaviate里搜索并补充历史上下文（不包括当前传进来的这轮）
+	if s.vectorService != nil {
+		relatedHistory, err := s.vectorService.SearchRelatedChatHistory(ctx, sessionID, query, 3)
+		if err != nil {
+			log.Printf("Failed to retrieve chat history from VectorService: %v", err)
+		}
+		if err == nil && len(relatedHistory) > 0 {
+			systemMsgContent += "\n\n[检索出的相关历史对话片段]:\n"
+			for i, fragment := range relatedHistory {
+				systemMsgContent += fmt.Sprintf("%d. %s\n", i+1, fragment)
+			}
+		}
+	}
+
+	// 历史对话过长，触发摘要并异步存储当前已满载的数据，防止继续占用大空间
+	if len(history) > 10 {
+		log.Printf("历史记录多于10轮，触发异步摘要与向量化...")
+
+		// 1. 发起异步摘要（提取所有核心点并存为记忆）
+		if s.vectorService != nil {
+			s.vectorService.AsyncGenerateSummary(ctx, sessionID, history, options)
+
+			// 模拟将多轮内容保存一条 Segment（这里也可以每个单独保存，如果不需要就跳过等待下次摘要）
+			var comboText string
+			for _, h := range history {
+				comboText += h.Role + ": " + h.Content + "\n"
+			}
+			// 2. 将当前的历史对话以分段的形式存入向量库（这里简单模拟成一条，实际可以设计更细粒度的分段策略）
+			go s.vectorService.StoreChatSegment(context.Background(), sessionID, "【分段原话记忆】:"+comboText)
+		}
+
+		systemMsgContent += "\n\n[提示]: 该用户的历史会话过长已被自动折叠或交由向量记忆接管。可直接回答当前的提问或查阅上方向量片段。\n"
+	}
+
+	// 初始化或者重置 Session（因为 history 是客户端抛过来的，可以选择使用端上的上下文或者服务端的内存Session）
+	s.sessionManager.ClearSession(sessionID)
+	_ = s.sessionManager.GetSession(sessionID)
+
+	// 系统 Prompt
+	s.sessionManager.AddMessage(sessionID, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleSystem,
+		Content: systemMsgContent,
+	})
+
+	// 将提取出的最近几轮/相关几轮放到上下文中（这里简单把传入的history放入，作为基础回退）
+	for _, h := range history {
+		s.sessionManager.AddMessage(sessionID, openai.ChatCompletionMessage{
+			Role:    h.Role,
+			Content: h.Content,
+		})
+	}
+
+	// 调用原生底层Chat接口（已去除了自带系统prompt等初始化的 Chat 方法体，也可直接写内置通信逻辑）
+	return s.Chat(ctx, sessionID, query, options)
 }
 
 // 兼容原先 Query 方法以避免外部调用直接报错，实质转发给 Chat，SessionID 写死或基于配置均可

@@ -87,6 +87,10 @@ func (r *weaviateRepository) EnsureSchema(ctx context.Context, className string)
 				Name:     "filename",
 				DataType: []string{"string"},
 			},
+			//{
+			//	Name:     "content",
+			//	DataType: []string{"text"},
+			//},
 		},
 		Vectorizer: "none",
 		VectorIndexConfig: map[string]interface{}{
@@ -165,6 +169,7 @@ func (r *weaviateRepository) SearchByVector(ctx context.Context, className strin
 	fields := []graphql.Field{
 		{Name: "fileId"},
 		{Name: "filename"},
+		{Name: "content"},
 		{
 			Name: "_additional",
 			Fields: []graphql.Field{
@@ -205,7 +210,7 @@ func (r *weaviateRepository) SearchByVector(ctx context.Context, className strin
 		return []vector.DocumentVector{}, nil
 	}
 
-	documents := make([]vector.DocumentVector, 0, 1) // 最多返回1条
+	documents := make([]vector.DocumentVector, 0, len(rawItems)) // 返回所有符合的数据
 	for _, item := range rawItems {
 		itemMap, ok := item.(map[string]interface{})
 		if !ok {
@@ -214,8 +219,9 @@ func (r *weaviateRepository) SearchByVector(ctx context.Context, className strin
 
 		fileID, _ := itemMap["fileId"].(string)
 		filename, _ := itemMap["filename"].(string)
+		content, _ := itemMap["content"].(string)
 
-		// 检查距离(distance)，过滤掉差距过远的数据
+		// 检查距离 (distance)，过滤掉差距过远的数据
 		// 余弦距离(cosine)范围是 0 (完全相同) 到 2 (完全相反)。通常0.25是一个合理的阈值。
 		if additional, ok := itemMap["_additional"].(map[string]interface{}); ok {
 			if dist, ok := additional["distance"].(float64); ok {
@@ -226,13 +232,16 @@ func (r *weaviateRepository) SearchByVector(ctx context.Context, className strin
 			}
 		}
 
+		metadata := make(map[string]interface{})
+		if content != "" {
+			metadata["content"] = content
+		}
+
 		documents = append(documents, vector.DocumentVector{
 			FileID:   fileID,
 			Filename: filename,
+			Metadata: metadata,
 		})
-
-		// 保证只返回唯一的最符合结果，拿到后就跳出循环
-		break
 	}
 
 	return documents, nil
