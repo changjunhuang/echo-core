@@ -27,7 +27,11 @@
       "Bash(taskkill *)",
       "Bash(curl *)",
       "Bash(findstr LISTENING)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "Bash(lsof -ti:8080)",
+      "Bash(xargs kill -9)",
+      "Bash(pkill -f \"echo-core.exe\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d['components']['schemas']['ChatRequest'], indent=2\\)\\)\")"
     ]
   }
 }

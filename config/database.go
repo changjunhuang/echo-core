@@ -1,6 +1,7 @@
 package config
 
 import (
+	"echo-core/models"
 	"echo-core/utils"
 	"fmt"
 	"gorm.io/gorm/schema"
@@ -78,9 +79,26 @@ func InitDB() {
 	sqlDB.SetConnMaxLifetime(time.Hour) // 连接最大存活时间
 
 	log.Println("数据库连接成功")
+
+	// 自动迁移表结构
+	if err := autoMigrate(DB); err != nil {
+		log.Printf("自动迁移失败: %v", err)
+	}
 }
 
 // GetDB 获取数据库实例（供其他包使用）
 func GetDB() *gorm.DB {
 	return DB
+}
+
+// autoMigrate 自动迁移表结构
+func autoMigrate(db *gorm.DB) error {
+	return db.AutoMigrate(
+		&models.Department{},
+		&models.File{},
+		&models.SessionMessage{},
+		&models.UserMemory{},
+		&models.ConversationSummary{},
+		&models.AgentConfig{},
+	)
 }

@@ -2,7 +2,10 @@ package routes
 
 import (
 	"echo-core/handlers"
+	"echo-core/remote"
+	"echo-core/service"
 	"fmt"
+	"os"
 
 	"github.com/gin-gonic/gin"
 )
@@ -53,6 +56,27 @@ func fileRegisterRoutes(api *gin.RouterGroup) error {
 
 // 注册聊天相关的路由
 func chatRegisterRoutes(api *gin.RouterGroup) error {
+	// 创建AI客户端
+	baseURL := os.Getenv("LLM_BASE_URL")
+	apiKey := os.Getenv("LLM_API_KEY")
+	model := os.Getenv("LLM_MODEL")
 
+	aiClient := remote.NewAIClient(baseURL, apiKey, model)
+
+	// 创建聊天服务
+	chatSvc := service.NewChatService(aiClient)
+	// 创建聊天处理器
+	chatHandler := handlers.NewChatHandler(chatSvc)
+
+	chat := api.Group("/chat")
+	{
+		chat.POST("", chatHandler.ChatHandle)                   // 聊天
+		chat.GET("/history", chatHandler.GetHistoryHandle)      // 获取历史
+		chat.GET("/summary", chatHandler.GetSummaryHandle)      // 获取摘要
+		chat.GET("/memory", chatHandler.GetUserMemoryHandle)    // 获取用户记忆
+		chat.POST("/memory", chatHandler.SaveUserMemoryHandle)  // 保存用户记忆
+		chat.GET("/agents", chatHandler.GetAgentsHandle)        // 获取Agent列表
+		chat.DELETE("/session", chatHandler.ClearSessionHandle) // 清理会话
+	}
 	return nil
 }
