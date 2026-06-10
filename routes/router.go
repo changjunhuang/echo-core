@@ -66,12 +66,18 @@ func chatRegisterRoutes(api *gin.RouterGroup) error {
 
 	// 创建聊天服务
 	chatSvc := service.NewChatService(aiClient)
-	// 创建聊天处理器
+	// 创建聊天处理器（传统 JSON 同步接口）
 	chatHandler := handlers.NewChatHandler(chatSvc)
+	// 创建流式聊天处理器（SSE + WebSocket）
+	chatStreamHandler := handlers.NewChatStreamHandler(chatSvc)
 
 	chat := api.Group("/chat")
 	{
-		chat.POST("", chatHandler.ChatHandle)                   // 聊天
+		// POST /api/chat         流式聊天（SSE，返回 text/event-stream）
+		chat.POST("", chatStreamHandler.ChatHandleSSE)
+		// GET  /api/chat/ws      WebSocket 聊天（全双工通道入口）
+		chat.GET("/ws", chatStreamHandler.ChatHandleWS)
+		// 其它辅助接口维持 JSON 同步形态
 		chat.GET("/history", chatHandler.GetHistoryHandle)      // 获取历史
 		chat.GET("/summary", chatHandler.GetSummaryHandle)      // 获取摘要
 		chat.GET("/memory", chatHandler.GetUserMemoryHandle)    // 获取用户记忆

@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -188,8 +190,10 @@ func (c *AIClient) Chat(messages []AIChatMessage, tools []AITool) (*AIResponse, 
 }
 
 // ChatStream 流式聊天
+// 按 OpenAI 兼容的 SSE 协议逐行解析 data: {...} 帧，提取 delta.content 后回调 handler
+// handler 收到的是纯文本片段；返回错误时立即终止流
 func (c *AIClient) ChatStream(messages []AIChatMessage, tools []AITool, handler func(string) error) error {
-	log.Printf("[AIClient] ChatStream开始 | messages_count: %d", len(messages))
+	log.Printf("[AIClient] ChatStream开始 | messages_count: %d | tools_count: %d", len(messages), len(tools))
 
 	if len(messages) == 0 {
 		log.Printf("[AIClient] 消息为空")
@@ -218,6 +222,7 @@ func (c *AIClient) ChatStream(messages []AIChatMessage, tools []AITool, handler 
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	httpReq.Header.Set("Accept", "text/event-stream")
 
 	log.Printf("[AIClient] 发送流式请求")
 	resp, err := c.client.Do(httpReq)
@@ -233,51 +238,53 @@ func (c *AIClient) ChatStream(messages []AIChatMessage, tools []AITool, handler 
 		return fmt.Errorf("AI service returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	log.Printf("[AIClient] 开始读取流式响应")
-	reader := resp.Body
-	buf := make([]byte, 1024)
-	totalRead := 0
-	for {
-		n, err := reader.Read(buf)
-		if n > 0 {
-			totalRead += n
-			chunk := string(buf[:n])
-			// 简单处理SSE格式
-			if len(chunk) > 6 {
-				// 去掉 data: 前缀
-				content := chunk
-				if len(content) > 5 && content[:5] == "data:" {
-					content = content[5:]
-				}
-				if content == "[DONE]" {
-					break
-				}
-				content = trimSpace(content)
-				if content != "" {
-					if err := handler(content); err != nil {
-						log.Printf("[AIClient] 流式处理回调失败 | error: %v", err)
-					}
-				}
+	log.Printf("[AIClient] 开始解析SSE流式响应")
+	scanner := bufio.NewScanner(resp.Body)
+	// 适当扩大缓冲，避免单行超长被截断
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	chunkCount := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		// 兼容注释行与结束标记
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			if payload == "[DONE]" {
+				break
 			}
+			continue
 		}
-		if err != nil {
-			break
+
+		var chunk StreamChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			log.Printf("[AIClient] SSE帧解析失败 | error: %v | payload: %s", err, payload)
+			continue
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta.Content
+		if delta == "" {
+			continue
+		}
+		chunkCount++
+		if err := handler(delta); err != nil {
+			log.Printf("[AIClient] 流式处理回调失败 | error: %v", err)
+			return err
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("[AIClient] 读取SSE流失败 | error: %v", err)
+		return fmt.Errorf("read SSE stream failed: %w", err)
+	}
 
-	log.Printf("[AIClient] ChatStream完成 | total_read: %d", totalRead)
+	log.Printf("[AIClient] ChatStream完成 | chunks: %d", chunkCount)
 	return nil
-}
-
-// trimSpace 去除首尾空白
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\n' || s[0] == '\r' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\n' || s[len(s)-1] == '\r' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	return s
 }
 
 // GenerateSummary 生成摘要

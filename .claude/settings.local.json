@@ -36,7 +36,29 @@
       "Bash(GOMAXPROCS=1 GOGC=20 go build -p 1 -gcflags=\"all=-l -N\" ./...)",
       "Bash(GOMAXPROCS=1 go vet ./...)",
       "Bash(GOMAXPROCS=1 GOGC=10 go build -p 1 -o echo-core.exe .)",
-      "Bash(go vet *)"
+      "Bash(go vet *)",
+      "Bash(dir \"E:\\\\Goland\\\\Workspace\\\\echo-core\")",
+      "Bash(mkdir *)",
+      "WebSearch",
+      "WebFetch(domain:platform.openai.com)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/ProgramData/chocolatey/bin/**)",
+      "Bash(java -version)",
+      "Read(//tmp/**)",
+      "Bash(ls /c/Program*Files*/Graphviz*/bin/dot.exe)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Read(//c//**)",
+      "Bash(java -Djava.awt.headless=true -jar /tmp/plantuml.jar -tpng -charset UTF-8 \"架构图_优化前.puml\")",
+      "Bash(jar tf *)",
+      "Bash(python -c ' *)",
+      "Bash(cygpath -w /tmp/plantuml.jar)",
+      "Bash(java -Djava.awt.headless=true -jar \"C:/Users/h4215/AppData/Local/Temp/plantuml.jar\" -tpng -charset UTF-8 \"架构图_优化前.puml\")",
+      "Bash(tasklist //FI \"IMAGENAME eq curl.exe\")",
+      "Bash(go version *)",
+      "Bash(go env *)",
+      "Bash(go get *)",
+      "Bash(./wstest.exe -msg \"用一句话告诉我2加3等于几\")"
     ]
   }
 }

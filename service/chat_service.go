@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -203,6 +204,116 @@ func (s *ChatService) GetHistory(sessionID, userID string, limit int) ([]models.
 		limit = 50
 	}
 	return s.memRepo.GetSessionMessages(sessionID, userID, limit)
+}
+
+// StreamChunk 流式回调载荷（统一供 SSE / WebSocket 复用）
+type StreamChunk struct {
+	// Reply 当前累计的完整回复文本
+	Reply string
+	// Delta 本次回调新增的文本片段
+	Delta string
+	// Done 是否为最后一块（流结束）
+	Done bool
+	// Err 流过程中出现的错误（非空时 Done=true）
+	Err error
+}
+
+// ChatStream 流式对话
+// 直接调用 AI 客户端的 ChatStream，不经过 ReAct/工具调用链路，
+// 以保证 SSE / WebSocket 端到端的低延迟体验。
+// onChunk 回调会被逐段调用，Done=true 时表示本次流结束。
+func (s *ChatService) ChatStream(req ChatRequest, onChunk func(StreamChunk)) {
+	log.Printf("[ChatService] ChatStream开始 | userId: %s | sessionId: %s | messageLen: %d", req.UserID, req.SessionID, len(req.Message))
+
+	if req.UserID == "" || req.SessionID == "" || req.Message == "" {
+		log.Printf("[ChatService] ChatStream参数不完整 | userId: %s | sessionId: %s | messageLen: %d", req.UserID, req.SessionID, len(req.Message))
+		onChunk(StreamChunk{Done: true, Err: errors.New("userId, sessionId and message are required")})
+		return
+	}
+
+	// 1. 加载历史上下文
+	history, err := s.memRepo.GetSessionMessages(req.SessionID, req.UserID, 100)
+	if err != nil {
+		log.Printf("[ChatService] ChatStream获取历史失败 | error: %v", err)
+		onChunk(StreamChunk{Done: true, Err: fmt.Errorf("get history failed: %w", err)})
+		return
+	}
+	aiMessages := make([]remote.AIChatMessage, 0, len(history)+1)
+	for _, h := range history {
+		role := h.Role
+		if role == "tool" {
+			role = "assistant"
+		}
+		aiMessages = append(aiMessages, remote.AIChatMessage{
+			Role:    role,
+			Content: h.Content,
+		})
+	}
+
+	// 2. 摘要压缩（与 Chat 行为一致）
+	if s.summarizer.ShouldSummarize(len(aiMessages)) {
+		log.Printf("[ChatService] ChatStream触发摘要 | message_count: %d", len(aiMessages))
+		if summary, sumErr := s.summarizer.GenerateSummary(req.SessionID, req.UserID, aiMessages); sumErr != nil {
+			log.Printf("[ChatService] ChatStream生成摘要失败 | error: %v", sumErr)
+		} else {
+			log.Printf("[ChatService] ChatStream摘要生成成功 | summary_len: %d", len(summary))
+		}
+	}
+
+	// 3. 追加当前用户消息
+	aiMessages = append(aiMessages, remote.AIChatMessage{
+		Role:    "user",
+		Content: req.Message,
+	})
+
+	// 4. 持久化用户消息
+	userMsg := &models.SessionMessage{
+		SessionID: req.SessionID,
+		UserID:    req.UserID,
+		Role:      "user",
+		Content:   req.Message,
+		CreatedAt: time.Now(),
+	}
+	if saveErr := s.memRepo.SaveSessionMessage(userMsg); saveErr != nil {
+		log.Printf("[ChatService] ChatStream保存用户消息失败: %v", saveErr)
+	}
+
+	// 5. 流式调用AI
+	log.Printf("[ChatService] ChatStream调用AI | context_messages: %d", len(aiMessages))
+	var (
+		fullReply strings.Builder
+	)
+	streamErr := s.aiClient.ChatStream(aiMessages, nil, func(delta string) error {
+		fullReply.WriteString(delta)
+		onChunk(StreamChunk{
+			Reply: fullReply.String(),
+			Delta: delta,
+		})
+		return nil
+	})
+
+	// 6. 流结束
+	if streamErr != nil {
+		log.Printf("[ChatService] ChatStream AI调用失败 | error: %v", streamErr)
+		onChunk(StreamChunk{Done: true, Err: streamErr, Reply: fullReply.String()})
+		return
+	}
+
+	// 7. 持久化助手回复
+	reply := fullReply.String()
+	assistantMsg := &models.SessionMessage{
+		SessionID: req.SessionID,
+		UserID:    req.UserID,
+		Role:      "assistant",
+		Content:   reply,
+		CreatedAt: time.Now(),
+	}
+	if saveErr := s.memRepo.SaveSessionMessage(assistantMsg); saveErr != nil {
+		log.Printf("[ChatService] ChatStream保存助手回复失败: %v", saveErr)
+	}
+
+	log.Printf("[ChatService] ChatStream完成 | userId: %s | sessionId: %s | reply_len: %d", req.UserID, req.SessionID, len(reply))
+	onChunk(StreamChunk{Done: true, Reply: reply})
 }
 
 // GetUserMemory 获取用户记忆
