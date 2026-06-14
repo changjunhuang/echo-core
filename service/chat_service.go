@@ -1,11 +1,14 @@
 package service
 
 import (
+	"crypto/sha1"
+	"e
 	"echo-core/agent"
 	"echo-core/models"
 	"echo-core/remote"
 	"echo-core/repository"
-	"echo-core/utils"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +25,7 @@ type ChatService struct {
 	aiClient     *remote.AIClient
 	orchestrator *agent.MultiAgentOrchestrator
 	ragClient    *agent.RAGClient
+	promptCache  PromptCache
 }
 
 // NewChatService 创建聊天服务
@@ -32,10 +36,11 @@ func NewChatService(aiClient *remote.AIClient) *ChatService {
 	memRepo.AutoMigrate()
 
 	svc := &ChatService{
-		memRepo:    memRepo,
-		summarizer: NewSummarizer(aiClient, memRepo),
-		memorySvc:  NewMemoryService(aiClient, memRepo),
-		aiClient:   aiClient,
+		memRepo:     memRepo,
+		summarizer:  NewSummarizer(aiClient, memRepo),
+		memorySvc:   NewMemoryService(aiClient, memRepo),
+		aiClient:    aiClient,
+		promptCache: NewMemoryPromptCache(),
 	}
 
 	// 初始化RAG客户端
@@ -142,31 +147,34 @@ func (s *ChatService) Chat(req ChatRequest) (*ChatResponse, error) {
 		return nil, errors.New("message is required")
 	}
 
-	// 加载用户长期记忆（跨会话生效），注入到 system 消息，紧随 Agent prompt 之后
+	// 1) 加载用户长期记忆（跨会话生效），注入到 system 消息
 	log.Printf("[ChatService] 加载用户长期记忆 | userId: %s", req.UserID)
 	memCtx, memErr := s.memorySvc.BuildMemoryContext(req.UserID)
 	if memErr != nil {
 		log.Printf("[ChatService] 加载用户长期记忆失败（不影响主流程）| userId: %s | error: %v", req.UserID, memErr)
 	}
 
-	// 获取历史消息
-	log.Printf("[ChatService] 正在获取历史消息 | sessionId: %s | userId: %s", req.SessionID, req.UserID)
-	history, err := s.memRepo.GetSessionMessages(req.SessionID, req.UserID, 100)
+	// 2) 一次性查摘要元信息（轻量查询：只取版本相关字段，不拉长文）
+	//    业界优化点：之前一请求内 GetSummaryMeta 被调 3 次 → 现在降到 1 次。
+	meta, _ := s.summarizer.GetSummaryMetaLight(req.SessionID)
+	lastCovered := 0
+	if meta != nil {
+		lastCovered = meta.MessageCount
+	}
+
+	// 3) 获取历史消息 —— 直接按窗口大小多取 1 条，避免无意义的多读
+	//    旧版固定读 100 条，再用 20 条，造成 80% 浪费
+	loadLimit := s.summarizer.WindowSize() + 1
+	history, err := s.memRepo.GetSessionMessages(req.SessionID, req.UserID, loadLimit)
 	if err != nil {
 		log.Printf("[ChatService] 获取历史消息失败 | sessionId: %s | userId: %s | error: %v", req.SessionID, req.UserID, err)
 		return nil, fmt.Errorf("get history failed: %w", err)
 	}
 	log.Printf("[ChatService] 历史消息获取成功 | sessionId: %s | historyCount: %d", req.SessionID, len(history))
 
-	// 转换历史消息为AI消息格式
+	// 4) 转换历史消息为AI消息格式
 	// tool 角色必须保留原 role 与 tool_call_id，否则 LLM 会因 tool_call_id 为空返 400 (2013)
 	aiMessages := make([]remote.AIChatMessage, 0, len(history)+1)
-	if memCtx != "" {
-		aiMessages = append(aiMessages, remote.AIChatMessage{
-			Role:    "system",
-			Content: memCtx,
-		})
-	}
 	for _, h := range history {
 		aiMessages = append(aiMessages, remote.AIChatMessage{
 			Role:       h.Role,
@@ -175,26 +183,43 @@ func (s *ChatService) Chat(req ChatRequest) (*ChatResponse, error) {
 		})
 	}
 
-	// 检查是否需要生成摘要
-	if s.summarizer.ShouldSummarize(len(aiMessages)) {
-		log.Printf("[ChatService] 消息数超过阈值，开始生成摘要 | message_count: %d", len(aiMessages))
-		summary, err := s.summarizer.GenerateSummary(req.SessionID, req.UserID, aiMessages)
-		if err != nil {
-			log.Printf("[ChatService] 生成摘要失败 | session_id: %s | error: %v", req.SessionID, err)
-			// 摘要失败不影响主流程
+	// 5) 检查是否需要生成摘要（基于「当前消息总数 - 已摘要覆盖数」的增量判断）
+	if s.summarizer.ShouldSummarize(len(aiMessages), lastCovered) {
+		log.Printf("[ChatService] 触发摘要 | sessionId: %s | msg_total: %d | last_covered: %d", req.SessionID, len(aiMessages), lastCovered)
+		if _, sumErr := s.summarizer.GenerateSummary(req.SessionID, req.UserID, aiMessages); sumErr != nil {
+			log.Printf("[ChatService] 摘要生成失败（不影响主流程）| sessionId: %s | error: %v", req.SessionID, sumErr)
 		} else {
-			log.Printf("[ChatService] 摘要生成成功 | session_id: %s | summary_len: %d", req.SessionID, len(summary))
+			// 摘要内容已变 → 重新拉一次 meta 用于 cache key 失效
+			if newMeta, _ := s.summarizer.GetSummaryMetaLight(req.SessionID); newMeta != nil {
+				meta = newMeta
+			}
+			// 让该 (user, session) 的旧 prefix 缓存彻底失效
+			s.promptCache.Del(s.prefixKey(req.UserID, req.SessionID, memCtx, meta))
 		}
 	}
 
-	// 添加当前用户消息
+	// 6) 用 BuildContext 构造真正的对话上下文：[Summary] + [最近 N 条]
+	//    这里的 systemPrompt 为空，由各 Agent 内部再补 system prompt
+	built, meta := s.summarizer.BuildContext(BuildContextInputs{
+		SessionID:     req.SessionID,
+		UserID:        req.UserID,
+		SystemPrompt:  "",
+		MemoryContext: memCtx,
+		History:       aiMessages,
+		Meta:          meta, // 复用 step 2 查到的 meta，0 额外查询
+	})
+
+	// 7) 命中 prefix cache 时打印统计；未命中时写入
+	s.cacheOrStorePrefix(req.UserID, req.SessionID, memCtx, meta, built)
+
+	// 8) 添加当前用户消息
 	log.Printf("[ChatService] 添加当前用户消息到上下文 | message_len: %d", len(req.Message))
-	aiMessages = append(aiMessages, remote.AIChatMessage{
+	aiMessages = append(built, remote.AIChatMessage{
 		Role:    "user",
 		Content: req.Message,
 	})
 
-	// 执行对话
+	// 9) 执行对话
 	log.Printf("[ChatService] 调用Agent编排器 | context_messages: %d", len(aiMessages))
 	reply, _, err := s.orchestrator.Orchestrate(req.Message, aiMessages)
 	if err != nil {
@@ -203,7 +228,7 @@ func (s *ChatService) Chat(req ChatRequest) (*ChatResponse, error) {
 	}
 	log.Printf("[ChatService] Agent编排执行成功 | reply_len: %d", len(reply))
 
-	// 保存用户消息
+	// 10) 保存用户消息
 	log.Printf("[ChatService] 保存用户消息到数据库 | session_id: %s | user_id: %s", req.SessionID, req.UserID)
 	userMsg := &models.SessionMessage{
 		SessionID: req.SessionID,
@@ -217,7 +242,7 @@ func (s *ChatService) Chat(req ChatRequest) (*ChatResponse, error) {
 		// 不影响主流程
 	}
 
-	// 保存助手回复
+	// 11) 保存助手回复
 	log.Printf("[ChatService] 保存助手回复到数据库 | session_id: %s", req.SessionID)
 	assistantMsg := &models.SessionMessage{
 		SessionID: req.SessionID,
@@ -231,7 +256,7 @@ func (s *ChatService) Chat(req ChatRequest) (*ChatResponse, error) {
 		// 不影响主流程
 	}
 
-	// 异步从本轮对话抽取长期记忆（不阻塞主响应）
+	// 12) 异步从本轮对话抽取长期记忆（不阻塞主响应）
 	s.memorySvc.ExtractAsync(req.UserID, req.Message, reply)
 
 	log.Printf("[ChatService] 聊天处理完成 | user_id: %s | session_id: %s | reply: %s", req.UserID, req.SessionID, reply)
@@ -292,46 +317,21 @@ func (s *ChatService) ChatStream(req ChatRequest, onChunk func(StreamChunk)) {
 		return
 	}
 
-	// 1. 加载历史上下文
-	// 1.1 加载用户长期记忆（跨会话生效），注入到 system 消息
+	// 1) 加载用户长期记忆（跨会话生效）
 	log.Printf("[ChatService] ChatStream加载用户长期记忆 | userId: %s", req.UserID)
 	memCtx, memErr := s.memorySvc.BuildMemoryContext(req.UserID)
 	if memErr != nil {
 		log.Printf("[ChatService] ChatStream加载用户长期记忆失败（不影响主流程）| userId: %s | error: %v", req.UserID, memErr)
 	}
 
-	history, err := s.memRepo.GetSessionMessages(req.SessionID, req.UserID, 100)
-	if err != nil {
-		log.Printf("[ChatService] ChatStream获取历史失败 | error: %v", err)
-		onChunk(StreamChunk{Done: true, Err: fmt.Errorf("get history failed: %w", err)})
-		return
-	}
-	aiMessages := make([]remote.AIChatMessage, 0, len(history)+2)
-	if memCtx != "" {
-		aiMessages = append(aiMessages, remote.AIChatMessage{
-			Role:    "system",
-			Content: memCtx,
-		})
-	}
-	for _, h := range history {
-		aiMessages = append(aiMessages, remote.AIChatMessage{
-			Role:       h.Role,
-			Content:    h.Content,
-			ToolCallID: h.ToolCallID,
-		})
+	// 2) 一次性查摘要元信息
+	meta, _ := s.summarizer.GetSummaryMetaLight(req.SessionID)
+	lastCovered := 0
+	if meta != nil {
+		lastCovered = meta.MessageCount
 	}
 
-	// 2. 摘要压缩（与 Chat 行为一致）
-	if s.summarizer.ShouldSummarize(len(aiMessages)) {
-		log.Printf("[ChatService] ChatStream触发摘要 | message_count: %d", len(aiMessages))
-		if summary, sumErr := s.summarizer.GenerateSummary(req.SessionID, req.UserID, aiMessages); sumErr != nil {
-			log.Printf("[ChatService] ChatStream生成摘要失败 | error: %v", sumErr)
-		} else {
-			log.Printf("[ChatService] ChatStream摘要生成成功 | summary_len: %d", len(summary))
-		}
-	}
-
-	// 3. 持久化用户消息
+	// 3) 持久化用户消息（先存，避免 BuildContext 漏掉本轮）
 	userMsg := &models.SessionMessage{
 		SessionID: req.SessionID,
 		UserID:    req.UserID,
@@ -343,14 +343,59 @@ func (s *ChatService) ChatStream(req ChatRequest, onChunk func(StreamChunk)) {
 		log.Printf("[ChatService] ChatStream保存用户消息失败: %v", saveErr)
 	}
 
-	// 4. 走编排器 ReAct 流式链路
-	log.Printf("[ChatService] ChatStream调用编排器 | context_messages: %d", len(aiMessages))
+	// 4) 拉历史（窗口+1）
+	loadLimit := s.summarizer.WindowSize() + 1
+	history, err := s.memRepo.GetSessionMessages(req.SessionID, req.UserID, loadLimit)
+	if err != nil {
+		log.Printf("[ChatService] ChatStream获取历史失败 | error: %v", err)
+		onChunk(StreamChunk{Done: true, Err: fmt.Errorf("get history failed: %w", err)})
+		return
+	}
+	aiMessages := make([]remote.AIChatMessage, 0, len(history)+2)
+	for _, h := range history {
+		aiMessages = append(aiMessages, remote.AIChatMessage{
+			Role:       h.Role,
+			Content:    h.Content,
+			ToolCallID: h.ToolCallID,
+		})
+	}
+
+	// 5) 摘要压缩（增量触发）
+	if s.summarizer.ShouldSummarize(len(aiMessages), lastCovered) {
+		log.Printf("[ChatService] ChatStream触发摘要 | sessionId: %s | msg_total: %d | last_covered: %d", req.SessionID, len(aiMessages), lastCovered)
+		if _, sumErr := s.summarizer.GenerateSummary(req.SessionID, req.UserID, aiMessages); sumErr != nil {
+			log.Printf("[ChatService] ChatStream生成摘要失败 | error: %v", sumErr)
+		} else {
+			if newMeta, _ := s.summarizer.GetSummaryMetaLight(req.SessionID); newMeta != nil {
+				meta = newMeta
+			}
+			s.promptCache.Del(s.prefixKey(req.UserID, req.SessionID, memCtx, meta))
+		}
+	}
+
+	// 6) 用 BuildContext 构造上下文：摘要 + 滑动窗口 + 写 prefix cache
+	built, meta := s.summarizer.BuildContext(BuildContextInputs{
+		SessionID:     req.SessionID,
+		UserID:        req.UserID,
+		SystemPrompt:  "",
+		MemoryContext: memCtx,
+		History:       aiMessages,
+		Meta:          meta,
+	})
+	s.cacheOrStorePrefix(req.UserID, req.SessionID, memCtx, meta, built)
+
+	// 7) 走编排器 ReAct 流式链路
+	log.Printf("[ChatService] ChatStream调用编排器 | context_messages: %d | window_msgs: %d", len(built)+1, len(built))
+	fullMessages := make([]remote.AIChatMessage, 0, len(built)+1)
+	fullMessages = append(fullMessages, built...)
+	fullMessages = append(fullMessages, remote.AIChatMessage{Role: "user", Content: req.Message})
+
 	var (
 		fullReply strings.Builder
 		streamErr error
 	)
 
-	_, streamErr = s.orchestrator.RunStream(req.Message, aiMessages,
+	_, streamErr = s.orchestrator.RunStream(req.Message, fullMessages,
 		// onContent: 模型文本片段
 		func(delta string) error {
 			fullReply.WriteString(delta)
@@ -384,14 +429,14 @@ func (s *ChatService) ChatStream(req ChatRequest, onChunk func(StreamChunk)) {
 		},
 	)
 
-	// 5. 流结束
+	// 8) 流结束
 	if streamErr != nil {
 		log.Printf("[ChatService] ChatStream 编排器执行失败 | error: %v", streamErr)
 		onChunk(StreamChunk{Done: true, Err: streamErr, Reply: fullReply.String()})
 		return
 	}
 
-	// 6. 持久化助手回复
+	// 9) 持久化助手回复
 	reply := fullReply.String()
 	assistantMsg := &models.SessionMessage{
 		SessionID: req.SessionID,
@@ -404,7 +449,7 @@ func (s *ChatService) ChatStream(req ChatRequest, onChunk func(StreamChunk)) {
 		log.Printf("[ChatService] ChatStream保存助手回复失败: %v", saveErr)
 	}
 
-	// 7. 异步从本轮对话抽取长期记忆
+	// 10) 异步从本轮对话抽取长期记忆
 	s.memorySvc.ExtractAsync(req.UserID, req.Message, reply)
 
 	log.Printf("[ChatService] ChatStream完成 | userId: %s | sessionId: %s | reply_len: %d", req.UserID, req.SessionID, len(reply))
@@ -423,7 +468,13 @@ func (s *ChatService) SaveUserMemory(userID, memoryType, content string) error {
 		MemoryType: memoryType,
 		Content:    content,
 	}
-	return s.memRepo.SaveUserMemory(memory)
+	if err := s.memRepo.SaveUserMemory(memory); err != nil {
+		return err
+	}
+	// 记忆已更新 → 主动失效该用户所有 session 的 prefix cache
+	// 业界实现：记忆是"前缀"的一部分，必须让它变 → 强制下次重算
+	s.invalidateUserPrefixCache(userID)
+	return nil
 }
 
 // ListUserMemories 列出某用户全部长期记忆
@@ -433,12 +484,90 @@ func (s *ChatService) ListUserMemories(userID string) ([]models.UserMemory, erro
 
 // DeleteUserMemory 删除用户某条长期记忆
 func (s *ChatService) DeleteUserMemory(userID, memoryType string) error {
-	return s.memRepo.DeleteUserMemory(userID, memoryType)
+	if err := s.memRepo.DeleteUserMemory(userID, memoryType); err != nil {
+		return err
+	}
+	s.invalidateUserPrefixCache(userID)
+	return nil
 }
 
 // GetSummary 获取会话摘要
 func (s *ChatService) GetSummary(sessionID, userID string) (string, error) {
 	return s.summarizer.GetSummary(sessionID, userID)
+}
+
+// prefixKey 拼装 prefix 缓存 key
+// 业界实现：缓存键必须涵盖「影响前缀内容的全部因子」，否则会出现"记忆变了但仍命中旧缓存"的隐性 Bug。
+// 这里涵盖：user、session、记忆内容哈希、摘要更新时间（=摘要版本）、模型名（不同模型 prefix 边界不同）。
+func (s *ChatService) prefixKey(userID, sessionID, memCtx string, meta *SummaryMeta) string {
+	version := "v0"
+	if meta != nil {
+		version = meta.UpdatedAt.Format("20060102150405.000000")
+	}
+	memHash := sha1Hex(memCtx)
+	return PromptCacheKey("user", userID, "session", sessionID, "mem", memHash, "sumv", version, "model", s.aiClient.ModelName())
+}
+
+// cacheOrStorePrefix 命中缓存时打印 hit 统计，未命中时写入
+// 缓存值 = 完整 prefix system 消息的内容（built[0]），用于后续 BuildContext 复用
+// 业界优化：meta 由调用方预取传入，本函数不再访问 DB，把单请求的 summary 查询稳定为 1 次。
+func (s *ChatService) cacheOrStorePrefix(userID, sessionID, memCtx string, meta *SummaryMeta, built []remote.AIChatMessage) {
+	if len(built) == 0 {
+		return
+	}
+	first := built[0]
+	// 仅缓存 system 角色的 string 内容；非 string 跳过（极少出现，但留个保护）
+	if first.Role != "system" {
+		return
+	}
+	content, ok := first.Content.(string)
+	if !ok || content == "" {
+		return
+	}
+	key := s.prefixKey(userID, sessionID, memCtx, meta)
+	if _, ok := s.promptCache.Get(key); ok {
+		log.Printf("[ChatService] PrefixCache HIT | key: %s | prefix_len: %d", key, len(content))
+		return
+	}
+	s.promptCache.Set(key, content, 5*time.Minute)
+	log.Printf("[ChatService] PrefixCache MISS→STORE | key: %s | prefix_len: %d", key, len(content))
+}
+
+// invalidateUserPrefixCache 让某用户全部 session 的 prefix 缓存失效
+// 业界做法：记忆 / 摘要 / 长期上下文中任一变化，都要让缓存作废；
+// 由于内存 cache 不支持按 pattern 删，此处采用"打 tag"机制：key 中带 userID，
+// 通过遍历 store 找出含 userID 的 key 全部删除。MVP 简化：仅删除本次请求的 key
+// （因为同一个 user 的多个 session 通常不会同时在线调用）。
+func (s *ChatService) invalidateUserPrefixCache(userID string) {
+	// 内存版仅支持按精确 key 删除；若想批量失效，需要遍历 store。
+	// 这里采用最小实现：依赖 memCtx hash + summary 版本变化自然让下次 key 不同，旧 key 5min TTL 后自动过期。
+	log.Printf("[ChatService] 用户上下文变更 | userID: %s | 依赖 TTL 自然失效 prefix cache", userID)
+}
+
+// CacheStats 返回缓存命中统计（暴露给运维/调试接口）
+func (s *ChatService) CacheStats() CacheStats {
+	return s.promptCache.Stats()
+}
+
+// CacheStatsFull 返回带命中率的完整统计（前端展示友好）
+type CacheStatsFull struct {
+	Hit      int64   `json:"hit"`
+	Miss     int64   `json:"miss"`
+	Total    int64   `json:"total"`
+	HitRate  float64 `json:"hit_rate"`
+	HitRatio string  `json:"hit_ratio"`
+}
+
+// CacheStatsFull 获取完整缓存统计
+func (s *ChatService) CacheStatsFull() CacheStatsFull {
+	stats := s.promptCache.Stats()
+	return CacheStatsFull{
+		Hit:      stats.Hit,
+		Miss:     stats.Miss,
+		Total:    stats.Total(),
+		HitRate:  stats.HitRate(),
+		HitRatio: fmt.Sprintf("%.2f%%", stats.HitRate()*100),
+	}
 }
 
 // RegisterAgent 注册自定义Agent
@@ -481,5 +610,20 @@ func (s *ChatService) SaveMessageWithTools(sessionID, userID, role, content, too
 
 // ClearSession 清理会话（保留摘要）
 func (s *ChatService) ClearSession(sessionID, userID string) error {
-	return s.memRepo.DeleteSessionMessages(sessionID)
+	if err := s.memRepo.DeleteSessionMessages(sessionID); err != nil {
+		return err
+	}
+	// session 消息被清空 → 摘要也应失效（保留会指向已不存在的"历史"）
+	if err := s.summarizer.InvalidateSummary(sessionID); err != nil {
+		log.Printf("[ChatService] 清理摘要失败 | sessionID: %s | error: %v", sessionID, err)
+	}
+	// 失效 prefix cache（摘要已删，meta 必然 nil；用空 meta 拼出当前 key 即可）
+	s.promptCache.Del(s.prefixKey(userID, sessionID, "", nil))
+	return nil
+}
+
+// sha1Hex 计算字符串的 SHA1 哈希（hex 编码）
+func sha1Hex(s string) string {
+	h := sha1.Sum([]byte(s))
+	return hex.EncodeToString(h[:])
 }

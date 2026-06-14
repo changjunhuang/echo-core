@@ -3,6 +3,7 @@ package handlers
 import (
 	"echo-core/models"
 	"echo-core/service"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -266,5 +267,26 @@ func (h *ChatHandler) ClearSessionHandle(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "session cleared",
+	})
+}
+
+// CacheStatsHandle 返回系统提示词前缀缓存的命中统计
+// GET /api/chat/cache/stats
+func (h *ChatHandler) CacheStatsHandle(c *gin.Context) {
+	stats := h.svc.CacheStats()
+	total := stats.Hit + stats.Miss
+	var rate float64
+	if total > 0 {
+		rate = float64(stats.Hit) / float64(total)
+	}
+	log.Printf("[CacheStatsHandle] hit=%d miss=%d rate=%.2f", stats.Hit, stats.Miss, rate)
+	c.JSON(http.StatusOK, gin.H{
+		"code": 200,
+		"data": gin.H{
+			"hit":       stats.Hit,
+			"miss":      stats.Miss,
+			"hit_rate":  rate,
+			"hit_ratio": fmt.Sprintf("%.2f%%", rate*100),
+		},
 	})
 }

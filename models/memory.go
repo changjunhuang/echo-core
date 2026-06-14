@@ -37,12 +37,17 @@ func (UserMemory) TableName() string {
 }
 
 // ConversationSummary 对话摘要 - 用于压缩超长对话上下文
+// 每个 session 最多保留一份最新摘要（Upsert 语义）：
+//   - UpdatedAt 用于识别 "同一 session 的最新摘要"
+//   - MessageCount 记录该摘要覆盖到的消息条数，用于控制触发间隔
 type ConversationSummary struct {
-	ID        uint      `json:"id" gorm:"primaryKey"`
-	SessionID string    `json:"session_id" gorm:"index;size:64;not null"`
-	UserID    string    `json:"user_id" gorm:"index;size:64;not null"`
-	Summary   string    `json:"summary" gorm:"type:text;not null"`
-	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	SessionID    string    `json:"session_id" gorm:"index;size:64;not null"`
+	UserID       string    `json:"user_id" gorm:"index;size:64;not null"`
+	Summary      string    `json:"summary" gorm:"type:text;not null"`
+	MessageCount int       `json:"message_count" gorm:"default:0;comment:该摘要覆盖到的消息条数,用于增量触发判断"`
+	CreatedAt    time.Time `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt    time.Time `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 func (ConversationSummary) TableName() string {

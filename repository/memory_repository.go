@@ -34,6 +34,64 @@ func (r *MemoryRepository) SaveConversationSummary(summary *models.ConversationS
 	return config.GetDB().Create(summary).Error
 }
 
+// GetLatestSummary 获取某 session 的最新摘要（按 UpdatedAt 倒序取第一条）
+// 业界实现说明：UpdatedAt 是 GORM autoUpdateTime 自动维护的，识别"最新摘要"完全可靠。
+// 查询走 session_id 索引（小表全表足够，10w+ 行也毫秒级返回）。
+func (r *MemoryRepository) GetLatestSummary(sessionID string) (*models.ConversationSummary, error) {
+	var summary models.ConversationSummary
+	err := config.GetDB().Where("session_id = ?", sessionID).
+		Order("updated_at DESC").First(&summary).Error
+	if err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}
+
+// GetLatestSummaryVersion 轻量查询：只取 (id, updated_at, message_count) 三列
+// 用于高频路径（每次聊天都查一次），避免 SELECT * 拉回可能很长的 summary 文本。
+// 调用方拿到版本号后可用于 prefix cache 失效判断。
+func (r *MemoryRepository) GetLatestSummaryVersion(sessionID string) (*models.ConversationSummary, error) {
+	var summary models.ConversationSummary
+	err := config.GetDB().Select("id", "session_id", "user_id", "updated_at", "message_count").
+		Where("session_id = ?", sessionID).
+		Order("updated_at DESC").First(&summary).Error
+	if err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}
+
+// DeleteSummary 按 sessionID 删除摘要（用于"主动失效"，如记忆大幅更新、用户清空会话）
+func (r *MemoryRepository) DeleteSummary(sessionID string) error {
+	return config.GetDB().Where("session_id = ?", sessionID).
+		Delete(&models.ConversationSummary{}).Error
+}
+
+// UpsertConversationSummary 按 (sessionID, userID) 唯一化保存摘要
+// 同一 session 多次摘要不会产生重复行；返回最新一条
+func (r *MemoryRepository) UpsertConversationSummary(sessionID, userID, content string, messageCount int) error {
+	var existing models.ConversationSummary
+	err := config.GetDB().Where("session_id = ? AND user_id = ?", sessionID, userID).First(&existing).Error
+	if err != nil {
+		// 不存在则创建
+		now := time.Now()
+		return config.GetDB().Create(&models.ConversationSummary{
+			SessionID:    sessionID,
+			UserID:       userID,
+			Summary:      content,
+			MessageCount: messageCount,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}).Error
+	}
+	// 已存在则覆盖
+	return config.GetDB().Model(&existing).Where("id = ?", existing.ID).Updates(map[string]interface{}{
+		"summary":       content,
+		"message_count": messageCount,
+		"updated_at":    time.Now(),
+	}).Error
+}
+
 func (r *MemoryRepository) GetUserMemory(userID, memoryType string) (*models.UserMemory, error) {
 	var memory models.UserMemory
 	err := config.GetDB().Where("user_id = ? AND memory_type = ?", userID, memoryType).First(&memory).Error

@@ -134,6 +134,11 @@ func NewAIClient(baseURL, apiKey, model string) *AIClient {
 	}
 }
 
+// ModelName 暴露当前客户端使用的模型名（用于 prefix cache key 等场景）
+func (c *AIClient) ModelName() string {
+	return c.model
+}
+
 // Chat 实现聊天功能
 func (c *AIClient) Chat(messages []AIChatMessage, tools []AITool) (*AIResponse, error) {
 	return c.ChatWithToolChoice(messages, tools, nil)
@@ -502,35 +507,52 @@ func mergeToolCall(dst *AIToolCall, src AIToolCall) {
 	}
 }
 
-// GenerateSummary 生成摘要
-func (c *AIClient) GenerateSummary(messages []AIChatMessage) (string, error) {
-	log.Printf("[AIClient] GenerateSummary开始 | messages_count: %d", len(messages))
+// GenerateSummary 生成摘要（支持增量：旧摘要 + 新消息 → 新摘要）
+func (c *AIClient) GenerateSummary(prevSummary string, messages []AIChatMessage) (string, error) {
+	log.Printf("[AIClient] GenerateSummary开始 | prev_summary_len: %d | messages_count: %d", len(prevSummary), len(messages))
 
 	if len(messages) == 0 {
 		log.Printf("[AIClient] 消息为空")
 		return "", nil
 	}
 
-	// 构建摘要提示
+	// 构建系统提示：要求增量合并，输出不超 300 字
 	systemMsg := AIChatMessage{
-		Role:    "system",
-		Content: "请总结以下对话的核心内容，返回一个简洁的摘要（不超过200字）。只返回摘要内容，不要其他解释。",
+		Role: "system",
+		Content: `你是对话摘要生成器，负责把【已有摘要】与【新增对话】合并成一份"累计摘要"。
+
+【规则】
+1. 若已有摘要为空：从零生成一份简洁摘要，覆盖所有关键信息。
+2. 若已有摘要非空：在保留历史要点基础上，融入新增对话中的新事实/偏好/决策/结论，丢弃已过时的细节。
+3. 摘要不超过 300 字，使用中文（除非对话为其它语种）。
+4. 摘要以条目化短句为主，便于下游 LLM 快速消费。
+5. 只返回摘要正文，不要任何前缀/解释/标题。`,
 	}
 
-	// 收集所有用户消息
-	userContent := ""
+	// 收集本次对话（包含 user / assistant / tool 角色，避免漏掉关键信息）
+	var b strings.Builder
+	if strings.TrimSpace(prevSummary) != "" {
+		b.WriteString("【已有摘要】\n")
+		b.WriteString(prevSummary)
+		b.WriteString("\n\n【新增对话】\n")
+	} else {
+		b.WriteString("【对话内容】\n")
+	}
 	for _, msg := range messages {
-		if msg.Role == "user" {
-			if content, ok := msg.Content.(string); ok {
-				userContent += content + "\n"
-			}
+		role := msg.Role
+		if content, ok := msg.Content.(string); ok && content != "" {
+			b.WriteString("[")
+			b.WriteString(role)
+			b.WriteString("] ")
+			b.WriteString(content)
+			b.WriteString("\n")
 		}
 	}
-	log.Printf("[AIClient] 收集用户消息完成 | user_content_len: %d", len(userContent))
+	log.Printf("[AIClient] 收集对话内容完成 | content_len: %d", b.Len())
 
 	userMsg := AIChatMessage{
 		Role:    "user",
-		Content: userContent,
+		Content: b.String(),
 	}
 
 	log.Printf("[AIClient] 调用Chat生成摘要")

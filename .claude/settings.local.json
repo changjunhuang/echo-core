@@ -61,7 +61,19 @@
       "Bash(./wstest.exe -msg \"用一句话告诉我2加3等于几\")",
       "WebFetch(domain:api.minimaxi.com)",
       "Bash(cmd.exe *)",
-      "Bash(powershell *)"
+      "Bash(powershell *)",
+      "Bash(GOMAXPROCS=1 GOGC=50 go build -p 1 ./...)",
+      "Bash(tasklist)",
+      "Bash(go install *)",
+      "Bash(GOFLAGS=\"-mod=mod\" GOMAXPROCS=1 GOGC=20 go build -p 1 -ldflags=\"-s -w\" -trimpath -o echo-core-new.exe .)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(echo \"VET_EXIT=$?\")",
+      "Bash(/tmp/echo-core-test.exe)",
+      "Bash(echo \"PID=$!\")",
+      "Bash(kill 699)",
+      "Bash(grep \"SELECT.*FROM.*\\\\`conversation_summary\\\\`\" /tmp/echo-server2.log)",
+      "Bash(kill 769)",
+      "Bash(grep \"SELECT.*FROM.*\\\\`conversation_summary\\\\`\" /tmp/echo-server3.log)"
     ]
   }
 }

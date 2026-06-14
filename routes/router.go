@@ -78,14 +78,15 @@ func chatRegisterRoutes(api *gin.RouterGroup) error {
 		// GET  /api/chat/ws      WebSocket 聊天（全双工通道入口）
 		chat.GET("/ws", chatStreamHandler.ChatHandleWS)
 		// 其它辅助接口维持 JSON 同步形态
-		chat.GET("/history", chatHandler.GetHistoryHandle)       // 获取历史
-		chat.GET("/summary", chatHandler.GetSummaryHandle)       // 获取摘要
-		chat.GET("/memory", chatHandler.GetUserMemoryHandle)     // 获取用户记忆
-		chat.POST("/memory", chatHandler.SaveUserMemoryHandle)   // 保存用户记忆
+		chat.GET("/history", chatHandler.GetHistoryHandle)          // 获取历史
+		chat.GET("/summary", chatHandler.GetSummaryHandle)          // 获取摘要
+		chat.GET("/memory", chatHandler.GetUserMemoryHandle)        // 获取用户记忆
+		chat.POST("/memory", chatHandler.SaveUserMemoryHandle)      // 保存用户记忆
 		chat.GET("/memory/all", chatHandler.ListUserMemoriesHandle) // 列出用户全部长期记忆
 		chat.DELETE("/memory", chatHandler.DeleteUserMemoryHandle)  // 删除用户指定类型长期记忆
-		chat.GET("/agents", chatHandler.GetAgentsHandle)         // 获取Agent列表
-		chat.DELETE("/session", chatHandler.ClearSessionHandle)  // 清理会话
+		chat.GET("/agents", chatHandler.GetAgentsHandle)            // 获取Agent列表
+		chat.DELETE("/session", chatHandler.ClearSessionHandle)     // 清理会话
+		chat.GET("/cache/stats", chatHandler.CacheStatsHandle)      // 前缀缓存命中统计
 	}
 	return nil
 }
